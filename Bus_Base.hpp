@@ -164,29 +164,57 @@ class FuncBus{
 		T2& bus;
 };
 
+//Lazily-evaluated Funcbus. Values are not evaluated until they are loaded.
+//This usually causes a reversed order of execution.
+template <umax triggeraddr, umax triggeroff, typename what, typename T2, void (*F)(T2&)>
+class LazyFuncBus{
+	public:
+		LazyFuncBus<triggeraddr, triggeroff, what, T2, F>(T2& _bus): bus(_bus) {}
+		inline BYTE ld(umax addr) {
+			if(addr == triggeroff + ((triggeraddr) * sizeof(what))) //The first byte of a triggering address.
+				F(bus);
+			return bus.ld(addr);
+		}
+		inline void st(BYTE value, umax addr){bus.st(value, addr);}
+		BUS_FUNCTIONS()
+	private:
+		T2& bus;
+};
+
 #define PROCDEF(name) template <typename  bustype> inline void name(bustype& BUS)
 #define typeof(name) decltype(name)
 
 
-PROCDEF(myfunc){
-	f32 a;
-	BUS.load(a, 2);
-	a *= 3;
-	BUS.store(a, 0x100, 0); //Trigger myfunc2.
-}
-
+//Lazily-evaluated functions.
 PROCDEF(myfunc3){
 	f32 a;
-	BUS.load(a, 0x200, 0); //Retrieve.
+	BUS.load(a, 0x100, 0); //Intercept myfunc2's argument.
+	printf("Multiplying %f by 7...\n", a);
 	a *= 7;
-	BUS.store(a, 0); //write to the agreed-upon return value spot.
+	BUS.store(a, 0x100, 0); //write back.
 }
 
 PROCDEF(myfunc2){
 	f32 a;
-	BUS.load(a, 0x100, 0); //Retrieve.
+	BUS.load(a, 0x100, 0); //Retrieve. This will cause myfunc3 to be invoked, the argument is intercepted.
+	printf("Adding 3 to %f...\n", a);
 	a += 3;
-	BUS.store(a, 0x200, 0); //trigger myfunc3
+	BUS.store(a, 0x100, 0); //Write back. this does *not* cause an invocation.
+}
+
+//Non lazy function which writes to a different location than its arguments.
+PROCDEF(myfunc){
+	//Our argument is in 2, and is expected to be written to zero.
+	f32 a;
+	BUS.load(a,  2); //retrieve our argument
+	printf("Multiplying %f by 3...\n", a);
+	a *= 3;
+	BUS.store(a, 0x100, 0); //Store at 0x100
+	puts("MARK");
+	BUS.load(a, 0x100, 0); //Retrieve from 0x100, it has been processed from over the bus. 
+							//(This actually causes myfunc2 to be invoked, which is intercepted by myfunc3...)
+	puts("Storing result...");
+	BUS.store(a, 0x00, 0); //store at the return spot.
 }
 
 
@@ -195,15 +223,14 @@ PROCDEF(myfunc2){
 void otherfunc(f32 value){
 	MemBus<10> a;
 	//Define a custom memory layout!
-	FuncBus<0, 0x200, f32, typeof(a), myfunc3> b(a);//0x100 is the trigger address for myfunc2.
-													//it can only see A, it cannot invoke myfunc2.
-													//When an "f32" is wholly written to 0x200,
-													//the function will trigger.
-	FuncBus<0, 0x100, f32, typeof(b), myfunc2> c(b);//0x200 is the trigger address for myfunc.
-													//it sees the above function.
-													//it cannot invoke itself.
-	a.store(value, 2);
+	//Here we chain two functions together to produce a combined function.
+	LazyFuncBus<0, 0x100, f32, typeof(a), myfunc3> b(a); //Myfunc3 will never invoke myfunc2 or itself.
+	LazyFuncBus<0, 0x100, f32, typeof(b), myfunc2> c(b); //When myfunc2 loads 0x100, it invokes myfunc3.
+	//The order of evaluation is as follows:
+	//myfunc->myfunc3->myfunc2->myfunc
+	c.store(value, 0x00, 2);
 	myfunc(c); //we expect the returned value to be (value * 3 + 3) * 7
-	a.load(value, 0);
-	printf("Value is %f", value);
+	fgetc(stdin);
+	c.load(value, 0x00, 0);
+	printf("Value is %f\n", value);
 }
