@@ -1,3 +1,6 @@
 #include "Bus_Base.hpp"
-
-int main(){}
+#include <ctime>
+int main(){
+	srand(time(NULL));
+	otherfunc(rand()%7);
+}
