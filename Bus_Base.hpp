@@ -20,23 +20,23 @@
 
 #if BUSSIC_USE_FLOAT
 typedef float f32;
-static_assert(sizeof (f32) == 4);
+static_assert(sizeof (f32) == 4, "Type size test failed.");
 #endif
 typedef uint8_t u8;
 typedef int8_t i8;
 typedef u8 BYTE;
 typedef uint16_t u16;
 typedef int16_t i16;
-static_assert(sizeof(u8) == 1);
-static_assert(sizeof(u16) == 2);
-static_assert(sizeof(i8) == 1);
-static_assert(sizeof(i16) == 2);
+static_assert(sizeof(u8) == 1, "Type size test failed.");
+static_assert(sizeof(u16) == 2, "Type size test failed.");
+static_assert(sizeof(i8) == 1, "Type size test failed.");
+static_assert(sizeof(i16) == 2, "Type size test failed.");
 
 #if BUSSIC_IMPLEMENTATION_BITS >= 32
 typedef uint32_t u32;
 typedef int32_t i32;
-static_assert(sizeof(u32) == 4);
-static_assert(sizeof(i32) == 4);
+static_assert(sizeof(u32) == 4, "Type size test failed.");
+static_assert(sizeof(i32) == 4, "Type size test failed.");
 #endif
 typedef size_t umax;
 typedef ssize_t imax;
@@ -46,19 +46,19 @@ typedef ssize_t imax;
 
 typedef uint64_t u64;
 typedef int64_t i64;
-static_assert(sizeof(u64) == 8);
-static_assert(sizeof(i64) == 8);
+static_assert(sizeof(u64) == 8, "Type size test failed.");
+static_assert(sizeof(i64) == 8, "Type size test failed.");
 
 #endif
 
 #if BUSSIC_USE_DOUBLE
 typedef double f64;
-static_assert(sizeof(f64) == 8);
+static_assert(sizeof(f64) == 8, "Type size test failed.");
 #endif
 
 #if BUSSIC_USE_LONG_DOUBLE
 typedef long double f128;
-static_assert(sizeof(f128) == 16);
+static_assert(sizeof(f128) == 16, "Type size test failed.");
 #endif
 
 
@@ -101,13 +101,29 @@ inline T load(T& retval, umax addr){\
 	return retval;\
 }\
 template <typename T>\
+inline T load(T& retval, umax off, umax addr){\
+	addr *= sizeof(T);\
+	for(imax i = 0; i < (imax)sizeof(T); i++){\
+		((BYTE*)&retval)[i] = ld(off + addr + i);\
+	}\
+	return retval;\
+}\
+template <typename T>\
 inline void store(T& value, umax addr){\
 	addr *= sizeof(T);\
 	for(imax i = 0; i < (imax)sizeof(T); i++){\
 		st( ((BYTE*)&value)[i], addr + i);\
 	}\
 }\
-template <typename T> inline void storev(T value, umax addr){store(value, addr);}
+template <typename T>\
+inline void store(T& value, umax off, umax addr){\
+	addr *= sizeof(T);\
+	for(imax i = 0; i < (imax)sizeof(T); i++){\
+		st( ((BYTE*)&value)[i], off + addr + i);\
+	}\
+}\
+template <typename T> inline void storev(T value, umax addr){store(value, addr);}\
+template <typename T> inline void storev(T value, umax off, umax addr){store(value, off, addr);}
 
 //Bus Base Class
 class NullBus{
@@ -133,14 +149,14 @@ class MemBus{
 		alignas(BUSSIC_MAX_ALIGNMENT) BYTE memory[1<<(pow2size-1)];
 };
 
-template <umax triggeraddr, typename what, typename T2, void (*F)(T2&)>
+template <umax triggeraddr, umax triggeroff, typename what, typename T2, void (*F)(T2&)>
 class FuncBus{
 	public:
-		FuncBus<triggeraddr,what, T2, F>(T2& _bus): bus(_bus) {}
+		FuncBus<triggeraddr, triggeroff, what, T2, F>(T2& _bus): bus(_bus) {}
 		inline BYTE ld(umax addr) {return bus.ld(addr);}
 		inline void st(BYTE value, umax addr){
 			bus.st(value, addr);
-			if(addr == (triggeraddr) * sizeof(what) + (sizeof(what)-1)) //The last byte of it is being written.
+			if(addr == triggeroff + ((triggeraddr) * sizeof(what)) + (sizeof(what)-1)) //The last byte of it is being written.
 				F(bus);
 		}
 		BUS_FUNCTIONS()
@@ -149,30 +165,45 @@ class FuncBus{
 };
 
 #define PROCDEF(name) template <typename  bustype> inline void name(bustype& BUS)
-#define FBUSDEF(name)
+#define typeof(name) decltype(name)
 
 
 PROCDEF(myfunc){
 	f32 a;
 	BUS.load(a, 2);
 	a *= 3;
-	BUS.store(a, 0);
-    BUS.store(a, 3);
+	BUS.store(a, 0x100, 0); //Trigger myfunc2.
+}
+
+PROCDEF(myfunc3){
+	f32 a;
+	BUS.load(a, 0x200, 0); //Retrieve.
+	a *= 7;
+	BUS.store(a, 0); //write to the agreed-upon return value spot.
 }
 
 PROCDEF(myfunc2){
 	f32 a;
-	BUS.load(a, 2);
+	BUS.load(a, 0x100, 0); //Retrieve.
 	a += 3;
-	BUS.store(a, 0);
+	BUS.store(a, 0x200, 0); //trigger myfunc3
 }
 
 
+
+
 void otherfunc(f32 value){
-	MemBus<4> a;
-	FuncBus<3, f32, MemBus<4>, myfunc2> b(a);
+	MemBus<10> a;
+	//Define a custom memory layout!
+	FuncBus<0, 0x200, f32, typeof(a), myfunc3> b(a);//0x100 is the trigger address for myfunc2.
+													//it can only see A, it cannot invoke myfunc2.
+													//When an "f32" is wholly written to 0x200,
+													//the function will trigger.
+	FuncBus<0, 0x100, f32, typeof(b), myfunc2> c(b);//0x200 is the trigger address for myfunc.
+													//it sees the above function.
+													//it cannot invoke itself.
 	a.store(value, 2);
-	myfunc(b);
+	myfunc(c); //we expect the returned value to be (value * 3 + 3) * 7
 	a.load(value, 0);
 	printf("Value is %f", value);
 }

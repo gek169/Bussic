@@ -1,6 +1,10 @@
 #include "Bus_Base.hpp"
 #include <ctime>
-int main(){
+int main(int argc, char** argv){
 	srand(time(NULL));
-	otherfunc(rand()%7);
+	if(argc > 1){
+		otherfunc(atof(argv[1]));
+	} else {
+		otherfunc(rand()%20);
+	}
 }
